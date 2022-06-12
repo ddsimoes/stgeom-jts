@@ -29,14 +29,17 @@ import com.vividsolutions.jts.geom.MultiPolygon
 import com.vividsolutions.jts.geom.Point
 import com.vividsolutions.jts.geom.Polygon
 import com.vividsolutions.jts.geom.impl.PackedCoordinateSequence
-import kotlin.math.abs
 
+@Suppress("MemberVisibilityCanBePrivate", "CanBeParameter")
 class StCoordinatesSystem(
     val offsetX: Double,
     val offsetY: Double,
-    val offsetZ: Double,
-    val resolution: Double
-)
+    val offsetZ: Double, // not implemented yet
+    val precision: Double
+) {
+    val offsetXLong = (offsetX * precision).toLong()
+    val offsetYLong = (offsetY * precision).toLong()
+}
 
 enum class StType(val value: Int) {
     POINT(1), LINESTRING(4), POLYGON(8), MULTIPOLYGON(264)
@@ -72,29 +75,28 @@ class StGeometryReader(private val coordinatesSystem: StCoordinatesSystem) {
     }
 
     private fun readMultiPolygon(): MultiPolygon {
-        val resolution = coordinatesSystem.resolution
 
         val count = readLongValues()
 
         check(count >= 4) { "Invalid point stream for Polygon. Expected at least 4 values (2 x/y coordinates), got $count values." }
 
-        var index = findSeparator(2,  count, -longArray[0] - 1, -longArray[1])
+        var index = findSeparator(2,  count, coordinatesSystem.offsetXLong - 1, coordinatesSystem.offsetYLong)
 
         if (index == -1) {
             //optimization to not create a list for single polygon
-            return geometryFactory.createMultiPolygon(arrayOf(readPolygon(0, count, resolution)))
+            return geometryFactory.createMultiPolygon(arrayOf(readPolygon(0, count)))
         }
 
         val polygons = mutableListOf<Polygon>()
 
         var idx0 = 0
         while (index != -1) {
-            polygons.add(readPolygon(idx0, index - idx0, resolution))
+            polygons.add(readPolygon(idx0, index - idx0))
             idx0 = index + 2
-            index = findSeparator(idx0 + 2,  count, -longArray[idx0], -longArray[idx0 + 1])
+            index = findSeparator(idx0 + 2,  count, coordinatesSystem.offsetXLong - 1, coordinatesSystem.offsetYLong)
         }
 
-        polygons.add(readPolygon(idx0, count - idx0, resolution))
+        polygons.add(readPolygon(idx0, count - idx0))
 
         return geometryFactory.createMultiPolygon(polygons.toTypedArray())
 
@@ -111,19 +113,17 @@ class StGeometryReader(private val coordinatesSystem: StCoordinatesSystem) {
     }
 
     private fun readPolygon(): Polygon {
-        val resolution = coordinatesSystem.resolution
-
         val count = readLongValues()
 
         check(count >= 4) { "Invalid point stream for Polygon. Expected at least 4 values (2 x/y coordinates), got $count values." }
 
-        return readPolygon(0, count, resolution)
+        return readPolygon(0, count)
     }
 
-    private fun readPolygon(offset: Int, count: Int, resolution: Double): Polygon {
-        val doubleArray = readDoubles(offset, count, resolution)
+    private fun readPolygon(offset: Int, count: Int): Polygon {
+        val doubleArray = readDoubles(offset, count)
 
-        val outerShell = readClosedRing(doubleArray, 0, coordinatesSystem.resolution)
+        val outerShell = readClosedRing(doubleArray, 0)
 
         if (outerShell.size == doubleArray.size) {
             return geometryFactory.createPolygon(
@@ -131,7 +131,7 @@ class StGeometryReader(private val coordinatesSystem: StCoordinatesSystem) {
             )
         }
 
-        val firstHole = readClosedRing(doubleArray, outerShell.size, coordinatesSystem.resolution)
+        val firstHole = readClosedRing(doubleArray, outerShell.size)
 
         if (outerShell.size + firstHole.size == doubleArray.size) {
             return geometryFactory.createPolygon(
@@ -145,7 +145,7 @@ class StGeometryReader(private val coordinatesSystem: StCoordinatesSystem) {
 
         var holeOffset = outerShell.size + firstHole.size
         while (holeOffset < doubleArray.size) {
-            val hole = readClosedRing(doubleArray, holeOffset, coordinatesSystem.resolution)
+            val hole = readClosedRing(doubleArray, holeOffset)
             holes.add(geometryFactory.createLinearRing(PackedCoordinateSequence.Double(hole, 2)))
             holeOffset += hole.size
         }
@@ -160,7 +160,7 @@ class StGeometryReader(private val coordinatesSystem: StCoordinatesSystem) {
         )
     }
 
-    private fun readClosedRing(doubleArray: DoubleArray, offset: Int, precision: Double): DoubleArray {
+    private fun readClosedRing(doubleArray: DoubleArray, offset: Int): DoubleArray {
 
         check(offset < doubleArray.size - 2)
 
@@ -168,7 +168,7 @@ class StGeometryReader(private val coordinatesSystem: StCoordinatesSystem) {
         val y0 = doubleArray[offset + 1]
         var index = offset + 2
 
-        while (abs(doubleArray[index] - x0) > precision || abs(doubleArray[index + 1] - y0) > precision)  {
+        while (doubleArray[index] != x0 || doubleArray[index + 1] != y0)  {
             index += 2
         }
 
@@ -181,9 +181,10 @@ class StGeometryReader(private val coordinatesSystem: StCoordinatesSystem) {
     }
 
     private fun readPoint(): Point {
-        val resolution = coordinatesSystem.resolution
-        val x = unpacker.read() * resolution + coordinatesSystem.offsetX
-        val y = unpacker.read() * resolution + coordinatesSystem.offsetY
+        val xLong = unpacker.read()
+        val yLong = unpacker.read()
+        val x = (xLong + coordinatesSystem.offsetXLong) / coordinatesSystem.precision
+        val y = (yLong + coordinatesSystem.offsetYLong) / coordinatesSystem.precision
 
         check(unpacker.remaining() == 0) {
             "Invalid point stream has unexpected ${unpacker.remaining()} bytes left after x/y coordinate."
@@ -193,30 +194,23 @@ class StGeometryReader(private val coordinatesSystem: StCoordinatesSystem) {
     }
 
     private fun readLineString(): LineString {
-        val resolution = coordinatesSystem.resolution
-
         val count = readLongValues()
 
         check(count >= 4) { "Invalid point stream for LineString. Expected at least 4 values (2 x/y coordinates), got $count values." }
 
-        val doubleArray = readDoubles(0, count, resolution)
+        val doubleArray = readDoubles(0, count)
 
         return geometryFactory.createLineString(PackedCoordinateSequence.Double(doubleArray, 2))
     }
 
-    private fun readDoubles(offset: Int, count: Int, resolution: Double): DoubleArray {
+    private fun readDoubles(offset: Int, count: Int): DoubleArray {
         val doubleArray = DoubleArray(count)
 
-        var offsetX = coordinatesSystem.offsetX
-        var offsetY = coordinatesSystem.offsetY
-
         for (idx0 in 0 until count step 2) {
-            val idx1 = idx0 + 1
-            doubleArray[idx0] = longArray[offset + idx0] * resolution + offsetX
-            doubleArray[idx1] = longArray[offset + idx1] * resolution + offsetY
-            offsetX = doubleArray[idx0]
-            offsetY = doubleArray[idx1]
+            doubleArray[idx0] = longArray[offset + idx0] / coordinatesSystem.precision
+            doubleArray[idx0 + 1] = longArray[offset + idx0 + 1] / coordinatesSystem.precision
         }
+
         return doubleArray
     }
 
@@ -231,6 +225,16 @@ class StGeometryReader(private val coordinatesSystem: StCoordinatesSystem) {
             longArray[index] = unpacker.read()
             index++
         }
+
+        var ox = coordinatesSystem.offsetXLong
+        var oy = coordinatesSystem.offsetYLong
+        for (i in 0 until index step 2) {
+            longArray[i]  = longArray[i] + ox
+            longArray[i + 1]  = longArray[i + 1] + oy
+            ox = longArray[i]
+            oy = longArray[i + 1]
+        }
+
         return index
     }
 

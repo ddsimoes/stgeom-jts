@@ -26,6 +26,7 @@ import com.vividsolutions.jts.geom.LineString
 import com.vividsolutions.jts.geom.MultiPolygon
 import com.vividsolutions.jts.geom.Point
 import com.vividsolutions.jts.geom.Polygon
+import com.vividsolutions.jts.io.WKBReader
 import com.vividsolutions.jts.io.WKTReader
 import org.supercsv.io.CsvListReader
 import org.supercsv.prefs.CsvPreference
@@ -33,36 +34,34 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
+private fun String.bytesFromHex(): ByteArray {
+    val byteArray = ByteArray(this.length / 2)
+
+    for (i in 0..byteArray.lastIndex) {
+        byteArray[i] = this.hexToByte(i * 2)
+    }
+
+    return byteArray
+}
+
+
+private fun String.hexToByte(i: Int): Byte {
+    return (this[i].hexToInt() shl 4 or this[i + 1].hexToInt()).toByte()
+}
+
+private fun Char.hexToInt(): Int {
+    return when (this) {
+        in '0'..'9' -> this.code - '0'.code
+        in 'a'..'f' -> 10 + this.code - 'a'.code
+        in 'A'..'F' -> 10 + this.code - 'A'.code
+        else -> error("Invalid hex character '$this'")
+    }
+}
+
 private class StData(
     val bytes: ByteArray,
     val geometry: Geometry
 ) {
-
-    companion object {
-        private fun String.bytesFromHex(): ByteArray {
-            val byteArray = ByteArray(this.length / 2)
-
-            for (i in 0..byteArray.lastIndex) {
-                byteArray[i] = this.hexToByte(i * 2)
-            }
-
-            return byteArray
-        }
-
-
-        private fun String.hexToByte(i: Int): Byte {
-            return (this[i].hexToInt() shl 4 or this[i + 1].hexToInt()).toByte()
-        }
-
-        private fun Char.hexToInt(): Int {
-            return when (this) {
-                in '0'..'9' -> this.code - '0'.code
-                in 'a'..'f' -> 10 + this.code - 'a'.code
-                in 'A'..'F' -> 10 + this.code - 'A'.code
-                else -> error("Invalid hex character '$this'")
-            }
-        }
-    }
 
     constructor(hexBytes: String, wkt: String):
             this(hexBytes.replace(" ", "").bytesFromHex(), WKTReader().read(wkt))
@@ -89,10 +88,10 @@ class StGeometryReaderTest {
         StData("0c0000000100000080848cfda41780848cfda417", 0.1, 0.1),
         StData("0c000000010000008088bbdca5178088bbdca517", 0.2, 0.2),
         StData("0c0000000100000080ded086a51780ded086a517", 0.11, 0.11),
-        StData("0c0000000100000080b89590a51780b89590a517", 0.12000000000000001, 0.12000000000000001),
+        StData("0c0000000100000080b89590a51780b89590a517", 0.12, 0.12),
     )
 
-    private val srs0 = StCoordinatesSystem(-400.0,	-400.0,	-100000.0, 1/1000000000.0)
+    private val srs0 = StCoordinatesSystem(-400.0, -400.0, -100000.0, 1000000000.0)
 
     /**
      * Tests the reader for reading of synthetic (not real life) Point only values.
@@ -105,13 +104,14 @@ class StGeometryReaderTest {
             val stGeom = reader.read(StType.POINT, example.bytes)
 
             assertTrue(stGeom is Point)
-            assertTrue(example.geometry.equalsExact(stGeom, srs0.resolution * 10), "\nExpected :${example.geometry}\nActual   :$stGeom\n")
+//            assertTrue(example.geometry.equals(stGeom, srs0.resolution * 10), "\nExpected :${example.geometry}\nActual   :$stGeom\n")
+            assertEquals(example.geometry, stGeom)
         }
     }
 
     @Test
     fun testLines() {
-        testLines(StCoordinatesSystem(-500000.0, -8800000.0, 0.0, 0.001), "/lines.csv")
+        testLines(StCoordinatesSystem(-500000.0, -8800000.0, 0.0, 1000.0), "/lines.csv")
     }
 
     @Test
@@ -136,10 +136,7 @@ class StGeometryReaderTest {
 
                 assertEquals(LineString::class, stGeom::class)
 
-                assertTrue(
-                    example.geometry.equalsExact(stGeom, srs.resolution),
-                    "\nExpected :${example.geometry}\nActual   :$stGeom\n"
-                )
+                assertEquals(example.geometry, stGeom)
 
                 line = csvReader.read()
             }
@@ -166,10 +163,7 @@ class StGeometryReaderTest {
 
                 assertEquals(Polygon::class, stGeom::class)
 
-                assertTrue(
-                    example.geometry.equalsExact(stGeom, srs.resolution * 10),
-                    "\nExpected :${example.geometry}\nActual   :$stGeom\n"
-                )
+                assertEquals(example.geometry, stGeom)
 
                 line = csv.read()
             }
@@ -201,10 +195,7 @@ class StGeometryReaderTest {
 
                 assertEquals(exampleCoords.size, stCoords.size)
 
-                assertTrue(
-                    example.geometry.equalsExact(stGeom, srs.resolution * 10),
-                    "\nExpected :${example.geometry}\nActual   :$stGeom\n"
-                )
+                assertEquals(example.geometry, stGeom)
 
                 line = csvReader.read()
             }
